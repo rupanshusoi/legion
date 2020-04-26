@@ -324,7 +324,27 @@ local function mult_exprs(lhs, rhs)
   return false
 end
 
-function analyze_expr_noninterference_self(expression, cx, loop_vars, report_fail, field_name)
+local function mod_expr(node, lhs, rawrhs)
+  if lhs:is(result.node.Variant) then
+  assert(lhs.coefficient == 1, "coefficient of loop index must be 1, but is " .. lhs.coefficient) 
+  end
+
+  if node:is(ast.typed.stat.ForNum) then
+    local loop_start_index = node.values[1].value
+    local loop_end_index = node.values[2].value
+
+    if loop_end_index == rawrhs.value then
+      return lhs
+    end
+  elseif node:is(ast.typed.stat.ForList) then
+    -- Support for foo(p[i % ispace.bounds]) in an index launch
+    if rawrhs:is(ast.typed.expr.FieldAccess) and rawrhs.value.value == node.value.value and rawrhs.field_name == "bounds" then
+      return lhs
+    end
+  end
+end
+
+function analyze_expr_noninterference_self(node, expression, cx, loop_vars, report_fail, field_name)
   local expr = strip_casts(expression)
 
   if expr:is(ast.typed.expr.ID) then
@@ -336,7 +356,7 @@ function analyze_expr_noninterference_self(expression, cx, loop_vars, report_fai
     elseif cx:is_loop_variable(expr.value) then
       for _, loop_var in ipairs(loop_vars) do
         if loop_var.symbol == expr.value then
-          return analyze_expr_noninterference_self(loop_var.value, cx, loop_vars, report_fail, field_name)
+          return analyze_expr_noninterference_self(node, loop_var.value, cx, loop_vars, report_fail, field_name)
         end
       end
       assert(false) -- loop_variable should have been found
@@ -361,8 +381,8 @@ function analyze_expr_noninterference_self(expression, cx, loop_vars, report_fai
     end
 
   elseif expr:is(ast.typed.expr.Binary) then
-    local lhs = analyze_expr_noninterference_self(expr.lhs, cx, loop_vars, report_fail, field_name)
-    local rhs =  analyze_expr_noninterference_self(expr.rhs, cx, loop_vars, report_fail, field_name)
+    local lhs = analyze_expr_noninterference_self(node, expr.lhs, cx, loop_vars, report_fail, field_name)
+    local rhs =  analyze_expr_noninterference_self(node, expr.rhs, cx, loop_vars, report_fail, field_name)
 
     if expr.op == "+" then
       return add_exprs(lhs, rhs, 1)
@@ -373,7 +393,9 @@ function analyze_expr_noninterference_self(expression, cx, loop_vars, report_fai
     elseif expr.op == "*" then
       return mult_exprs(lhs, rhs)
 
-    -- TODO: add mod operator check
+    elseif expr.op == "%" then
+      return mod_expr(node, lhs, expr.rhs)
+
     else
       return false
     end
@@ -451,8 +473,8 @@ local function matrix_is_noninterfering(matrix, cx)
   return false
 end
 
-local function analyze_index_noninterference_self(expr, cx, loop_vars, report_fail, field_name)
-  local res = analyze_expr_noninterference_self(expr, cx, loop_vars, report_fail, field_name)
+local function analyze_index_noninterference_self(node, expr, cx, loop_vars, report_fail, field_name)
+  local res = analyze_expr_noninterference_self(node, expr, cx, loop_vars, report_fail, field_name)
   if not res then
     return false
   elseif res:is(result.node.Variant) then
@@ -464,12 +486,12 @@ local function analyze_index_noninterference_self(expr, cx, loop_vars, report_fa
 end
 
 local function analyze_noninterference_self(
-    cx, task, arg, partition_type, mapping, loop_vars)
+    node, cx, task, arg, partition_type, mapping, loop_vars)
   local region_type = std.as_read(arg.expr_type)
   if partition_type and partition_type:is_disjoint() then
     local index =
       (arg:is(ast.typed.expr.Projection) and arg.region.index) or arg.index
-    if analyze_index_noninterference_self(index, cx, loop_vars)
+    if analyze_index_noninterference_self(node, index, cx, loop_vars)
     then
       return true
     end
@@ -1135,7 +1157,7 @@ local function optimize_loop_body(cx, node, report_pass, report_fail)
 
         do
           local passed = analyze_noninterference_self(
-            loop_cx, task, arg, partition_type, mapping, loop_vars)
+            node, loop_cx, task, arg, partition_type, mapping, loop_vars)
           if not passed then
             report_fail(call, "loop optimization failed: argument " .. tostring(i) ..
                 " interferes with itself")
