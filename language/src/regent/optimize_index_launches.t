@@ -1282,6 +1282,7 @@ local function insert_dynamic_check(is_demand, args_need_dynamic_check, index_la
    for _, idx in pairs(args_need_dynamic_check) do
      local arg, cross_arg
      if type(idx) == "table" then
+       -- Cross-check args are stored as pairs
        arg, cross_arg = index_launch_ast.call.args[idx[1]], index_launch_ast.call.args[idx[2]]
      else
        arg = index_launch_ast.call.args[idx]
@@ -1319,13 +1320,14 @@ local function insert_dynamic_check(is_demand, args_need_dynamic_check, index_la
        local duplicates_check = terralib.newlist()
        index_launch_ast.preamble:map(function(stat) duplicates_check:insert(stat) end)
 
-       local mk_duplicates_check = function(index_expr, error_msg, stats)
+       local mk_duplicates_check = function(index_expr, error_msg, duplicate_stats)
          if unopt_loop_ast.node_type:is(ast.typed.stat.ForNum) then
            index_expr = index_expr.arg
          end
  
          -- Assign: value = collapse(index_expr)
-         stats:insert(util.mk_stat_assignment(util.mk_expr_id_rawref(value), collapse_projection_functor(index_expr, dim, p_bounds)))
+         duplicate_stats:insert(util.mk_stat_assignment(util.mk_expr_id_rawref(value),
+             collapse_projection_functor(index_expr, dim, p_bounds)))
  
          local then_block = terralib.newlist()
  
@@ -1350,15 +1352,21 @@ local function insert_dynamic_check(is_demand, args_need_dynamic_check, index_la
          local cond = util.mk_expr_binary("and",
            util.mk_expr_binary(">=", util.mk_expr_id(value), util.mk_expr_constant(0, int64)),
            util.mk_expr_binary("<", util.mk_expr_id(value), util.mk_expr_id(volume)))
-         stats:insert(util.mk_stat_if(cond, then_block))
+         duplicate_stats:insert(util.mk_stat_if(cond, then_block))
  
        end
  
        if cross_arg == nil then
-         mk_duplicates_check(arg.index, ": loop optimization failed: argument " .. idx .. " interferes with itself", duplicates_check)
+         mk_duplicates_check(arg.index,
+           ": loop optimization failed: argument " .. idx .. " interferes with itself",
+           duplicates_check)
        else
-         mk_duplicates_check(arg.index, ": loop optimization failed: argument " .. idx[1] .. " interferes with argument " .. idx[2], duplicates_check)
-         mk_duplicates_check(cross_arg.index, ": loop optimization failed: argument " .. idx[1] .. " interferes with argument " .. idx[2], duplicates_check)
+         mk_duplicates_check(arg.index,
+           ": loop optimization failed: argument " .. idx[1] .. " interferes with argument " .. idx[2],
+           duplicates_check)
+         mk_duplicates_check(cross_arg.index,
+           ": loop optimization failed: argument " .. idx[1] .. " interferes with argument " .. idx[2],
+           duplicates_check)
        end
  
        local bounds
